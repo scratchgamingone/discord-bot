@@ -1,151 +1,140 @@
-const {
-    SlashCommandBuilder,
-    ActionRowBuilder,
-    StringSelectMenuBuilder,
-    ComponentType
-} = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const axios = require('axios');
+
+const statesAtoM = [
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA",
+    "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO"
+];
+
+const statesNtoZ = [
+    "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
+    "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
+];
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('weather')
-        .setDescription('Get the current weather for a U.S. state and town.'),
+        .setDescription('Get the current weather for a U.S. state and town.')
+        .addStringOption(option =>
+            option.setName('state_am')
+                .setDescription('Choose a U.S. state (A–M)')
+                .setRequired(false)
+                .addChoices(...statesAtoM.map(state => ({ name: state, value: state })))
+        )
+        .addStringOption(option =>
+            option.setName('state_nz')
+                .setDescription('Choose a U.S. state (N–Z)')
+                .setRequired(false)
+                .addChoices(...statesNtoZ.map(state => ({ name: state, value: state })))
+        )
+        .addStringOption(option =>
+            option.setName('town')
+                .setDescription('Enter a town (optional)')
+                .setRequired(false)
+        ),
 
     async execute(interaction) {
-        const apiKey = process.env.weather_api;
+        const weatherApiKey = process.env.weather_api;
+        const ninjasApiKey = process.env.NINJAS_API;
 
-        const states = [
-            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA",
-            "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-            "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT",
-            "VA", "WA", "WV", "WI", "WY"
-        ];
+        const stateAM = interaction.options.getString('state_am');
+        const stateNZ = interaction.options.getString('state_nz');
+        let state = stateAM || stateNZ;
 
-        const menu1 = new StringSelectMenuBuilder()
-            .setCustomId('select_us_state_1')
-            .setPlaceholder('Choose a U.S. state (A–M)')
-            .addOptions(states.slice(0, 25).map(state => ({ label: state, value: state })));
+        let town = interaction.options.getString('town');
 
-        const menu2 = new StringSelectMenuBuilder()
-            .setCustomId('select_us_state_2')
-            .setPlaceholder('Choose a U.S. state (N–Z)')
-            .addOptions(states.slice(25).map(state => ({ label: state, value: state })));
+        // If state not provided, pick random
+        if (!state) {
+            const allStates = [...statesAtoM, ...statesNtoZ];
+            state = allStates[Math.floor(Math.random() * allStates.length)];
+            await interaction.reply(`🎲 No state picked! I randomly selected **${state}**.`);
+        } else {
+            await interaction.reply(`✅ State selected: **${state}**`);
+        }
 
-        const row1 = new ActionRowBuilder().addComponents(menu1);
-        const row2 = new ActionRowBuilder().addComponents(menu2);
+        // If town not provided, fetch a valid one
+        if (!town) {
+            town = await findValidTown(state, ninjasApiKey, weatherApiKey);
+            await interaction.followUp(`🎲 No town given. I picked **${town}**.`);
+        }
 
-        await interaction.reply({
-            content: `📍 Please select a U.S. state:`,
-            components: [row1, row2],
-            flags: 1 << 6 // ephemeral
-        });
+        const locationQuery = `${town},${state},US`;
+        const geoUrl = `http://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(locationQuery)}&limit=1&appid=${weatherApiKey}`;
 
-        const collector = interaction.channel.createMessageComponentCollector({
-            componentType: ComponentType.StringSelect,
-            time: 30_000,
-            max: 1
-        });
+        try {
+            const geoRes = await axios.get(geoUrl);
+            const { lat, lon } = geoRes.data[0];
 
-        collector.on('collect', async (selectInteraction) => {
-            const selectedState = selectInteraction.values[0];
+            const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${weatherApiKey}`;
+            const weatherRes = await axios.get(weatherUrl);
+            const data = weatherRes.data;
 
-            await selectInteraction.update({
-                content: `✅ You selected **${selectedState}**.\n💬 Now, what town in **${selectedState}** do you want the weather for? Type it below:`,
-                components: []
-            });
+            const toF = c => (c * 9 / 5 + 32).toFixed(1);
+            const toMPH = mps => (mps * 2.23694).toFixed(1);
 
-            const msgFilter = m => m.author.id === interaction.user.id;
-            const msgCollector = interaction.channel.createMessageCollector({
-                filter: msgFilter,
-                time: 30_000,
-                max: 1
-            });
-
-            msgCollector.on('collect', async (msg) => {
-                const town = msg.content.trim();
-                try {
-                    const locationQuery = `${town},${selectedState},US`;
-                    const geoUrl = `http://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(locationQuery)}&limit=1&appid=${apiKey}`;
-                    const geoRes = await axios.get(geoUrl);
-
-                    if (!geoRes.data.length) {
-                        return msg.reply(`❌ Could not find weather for **${town}, ${selectedState}**. Please try again.`);
-                    }
-
-                    const { lat, lon } = geoRes.data[0];
-                    const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${apiKey}`;
-                    const weatherRes = await axios.get(weatherUrl);
-                    const data = weatherRes.data;
-
-                    // Conversions
-                    const toF = c => (c * 9 / 5 + 32).toFixed(1);
-                    const toMPH = mps => (mps * 2.23694).toFixed(1);
-
-                    const tempC = data.main.temp.toFixed(2);
-                    const tempF = toF(data.main.temp);
-                    const feelsC = data.main.feels_like.toFixed(2);
-                    const feelsF = toF(data.main.feels_like);
-                    const windMS = data.wind.speed.toFixed(1);
-                    const windMPH = toMPH(data.wind.speed);
-
-                    const condition = data.weather[0].description;
-                    const icon = getWeatherEmoji(data.weather[0].main);
-
-                    const reply = `
-**${icon} Weather in ${data.name}, US:**
-- **Condition:** ${condition}
-- **Temperature:** ${tempC}°C / ${tempF}°F
-- **Feels Like:** ${feelsC}°C / ${feelsF}°F
+            const reply = `
+**${getWeatherEmoji(data.weather[0].main)} Weather in ${data.name}, US:**
+- **Condition:** ${data.weather[0].description}
+- **Temperature:** ${data.main.temp.toFixed(2)}°C / ${toF(data.main.temp)}°F
+- **Feels Like:** ${data.main.feels_like.toFixed(2)}°C / ${toF(data.main.feels_like)}°F
 - **Humidity:** ${data.main.humidity}%
-- **Wind:** ${windMS} m/s / ${windMPH} mph
-                    `;
+- **Wind:** ${data.wind.speed.toFixed(1)} m/s / ${toMPH(data.wind.speed)} mph
+            `;
 
-                    await msg.reply(reply);
-                } catch (err) {
-                    console.error('❌ Weather fetch error:', err.response?.data || err.message);
-                    await msg.reply('❌ Failed to fetch weather. Try again later.');
-                }
-            });
-
-            msgCollector.on('end', collected => {
-                if (collected.size === 0) {
-                    interaction.followUp({
-                        content: '⏱️ You didn’t type a town in time.',
-                        ephemeral: true
-                    });
-                }
-            });
-        });
-
-        collector.on('end', collected => {
-            if (collected.size === 0) {
-                interaction.editReply({
-                    content: '⏱️ You didn’t select a state in time.',
-                    components: []
-                });
-            }
-        });
+            await interaction.followUp(reply);
+        } catch (err) {
+            console.error("❌ Weather fetch error:", err.response?.data || err.message);
+            await interaction.followUp("❌ Failed to get weather.");
+        }
     }
 };
 
-// ✅ Emoji Mapper
+// 🔹 Tries real towns from API Ninjas until OpenWeatherMap accepts one
+async function findValidTown(state, ninjasKey, weatherKey) {
+    const url = `https://api.api-ninjas.com/v1/city?state=${state}&country=US&limit=50`;
+
+    try {
+        const res = await axios.get(url, {
+            headers: { 'X-Api-Key': ninjasKey }
+        });
+
+        let towns = res.data.map(entry => entry.name);
+        if (!towns.length) return "Springfield";
+
+        // Shuffle the town list
+        for (let i = towns.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [towns[i], towns[j]] = [towns[j], towns[i]];
+        }
+
+        // Try each town until one works with OpenWeatherMap
+        for (const town of towns) {
+            const query = `${town},${state},US`;
+            const geoUrl = `http://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(query)}&limit=1&appid=${weatherKey}`;
+            try {
+                const geoRes = await axios.get(geoUrl);
+                if (geoRes.data.length > 0) {
+                    return town;
+                }
+            } catch (err) {
+                continue;
+            }
+        }
+
+        return "Springfield"; // fallback
+    } catch (err) {
+        console.error("❌ Town fetch error:", err.message);
+        return "Springfield";
+    }
+}
+
+// 🔹 Converts condition into emoji
 function getWeatherEmoji(main) {
     const map = {
-        Thunderstorm: '⛈️',
-        Drizzle: '🌦️',
-        Rain: '🌧️',
-        Snow: '❄️',
-        Clear: '☀️',
-        Clouds: '☁️',
-        Mist: '🌫️',
-        Smoke: '💨',
-        Haze: '🌫️',
-        Dust: '🌬️',
-        Fog: '🌁',
-        Sand: '🏜️',
-        Ash: '🌋',
-        Squall: '🌪️',
-        Tornado: '🌪️'
+        Thunderstorm: '⛈️', Drizzle: '🌦️', Rain: '🌧️', Snow: '❄️',
+        Clear: '☀️', Clouds: '☁️', Mist: '🌫️', Smoke: '💨',
+        Haze: '🌫️', Dust: '🌬️', Fog: '🌁', Sand: '🏜️',
+        Ash: '🌋', Squall: '🌪️', Tornado: '🌪️'
     };
     return map[main] || '🌈';
 }
