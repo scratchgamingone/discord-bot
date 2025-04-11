@@ -1,4 +1,11 @@
-const { SlashCommandBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder, ActionRowBuilder, EmbedBuilder, ComponentType } = require('discord.js');
+const {
+    SlashCommandBuilder,
+    StringSelectMenuBuilder,
+    StringSelectMenuOptionBuilder,
+    ActionRowBuilder,
+    EmbedBuilder,
+    ComponentType
+} = require('discord.js');
 const axios = require('axios');
 
 module.exports = {
@@ -30,10 +37,11 @@ module.exports = {
         await interaction.reply({
             content: `🔎 Choose your resolution${keyword ? ` for **"${keyword}"**` : ''}:`,
             components: [row],
-            ephemeral: true
+            ephemeral: false // public so collector can detect it
         });
 
         const collector = interaction.channel.createMessageComponentCollector({
+            filter: i => i.user.id === interaction.user.id && i.customId === 'select_resolution_img',
             componentType: ComponentType.StringSelect,
             time: 30_000,
             max: 1
@@ -59,12 +67,10 @@ module.exports = {
                 });
 
                 const results = res.data.data;
-
-                // Filter for exact resolution only
                 const exactMatches = results.filter(wp => wp.resolution === resolution);
 
                 if (!exactMatches.length) {
-                    return i.followUp({
+                    return await i.followUp({
                         content: `❌ No exact wallpapers found for **"${keyword}"** at **${resolution}**.`,
                         ephemeral: true
                     });
@@ -94,8 +100,7 @@ module.exports = {
             if (collected.size === 0) {
                 interaction.editReply({
                     content: '⏳ You didn’t choose a resolution in time.',
-                    components: [],
-                    ephemeral: true
+                    components: []
                 }).catch(() => {});
             }
         });
